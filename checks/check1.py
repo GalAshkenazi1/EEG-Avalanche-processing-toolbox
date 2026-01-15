@@ -1,6 +1,6 @@
 import numpy as np
-from avalache_preprocessor import avalanche_preprocessor, bin_avalanches
-from avalache_1st_gen import branching_parameter
+from avalanche_preprocessor import avalanche_preprocessor, bin_avalanches
+from avalanche_1st_gen import branching_parameter
 
 # 1. Generate dummy data (n_channels, n_samples)
 data = np.random.randn(60, 10000)
