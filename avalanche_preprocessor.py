@@ -1,4 +1,4 @@
-"""Avalanche preprocessing and binning functions.
+r"""Avalanche preprocessing and binning functions.
 
 Basic avalanche detection and binning functions:
 
@@ -11,7 +11,7 @@ import scipy.ndimage as ndi
 from scipy.stats import median_abs_deviation
 
 def avalanche_preprocessor(data, k=3.0, thresholding='std'):
-    """
+    r"""
     Detect avalanche events in the data.
 
     Params
@@ -69,7 +69,7 @@ def avalanche_preprocessor(data, k=3.0, thresholding='std'):
     return binary_data
 
 def _optimal_bin_size(binary_data):
-    """
+    r"""
     Determine the optimal bin size for avalanche detection.
 
     Params
@@ -95,7 +95,7 @@ def _optimal_bin_size(binary_data):
     return int(np.round(np.mean(ieis)))
 
 def bin_avalanches(binary_data, bin_size=None):
-    """
+    r"""
     Bin avalanche events into contiguous time bins.
 
     Params
@@ -121,7 +121,7 @@ def bin_avalanches(binary_data, bin_size=None):
     return binned_array
 
 def detect_avalanches(binned_array):
-    """
+    r"""
     Detect avalanche start and end indices in the binned array.
 
     Params
@@ -130,10 +130,11 @@ def detect_avalanches(binned_array):
         1-D ndarray of binned avalanche events.
 
     Returns
-    -------
-    avalanche_indices : np.ndarray
-        A 2D array of shape (n_avalanches, 2), where each row is [start_index, end_index].
-        Note: end_index is INCLUSIVE (the index of the last active bin).
+    ------- 
+    avalanche_dict : dict
+        Dictionary with keys:
+        - 'data': original binned_array
+        - 'indices': np.ndarray of shape (n_avalanches, 2) with start and end indices of each avalanche.
     """
     is_active = binned_array > 0
     n = len(is_active)
@@ -157,11 +158,7 @@ def detect_avalanches(binned_array):
     if len(start_indices) > len(end_indices):
         start_indices = start_indices[:len(end_indices)]
 
-    avalanches = [
-    (start, end, binned_array[start : end + 1].copy()) 
-    for start, end in zip(start_indices, end_indices)
-    ]
-
-    return avalanches
-
-    return np.column_stack((start_indices, end_indices))
+    return {
+        'data': binned_array,
+        'indices': np.column_stack((start_indices, end_indices))
+    }
