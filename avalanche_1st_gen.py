@@ -296,7 +296,6 @@ def tau_exponent(avalanche_dict):
     ------
     avalanche_dict : dict
             Dictionary with keys:
-            - 'data': 1-D ndarray of binned avalanche events (not used here)
             - 'indices': np.ndarray of shape (n_avalanches, 2) with start and end indices of each avalanche.
 
     Returns

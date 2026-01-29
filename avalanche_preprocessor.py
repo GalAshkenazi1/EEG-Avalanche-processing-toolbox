@@ -118,9 +118,9 @@ def bin_avalanches(binary_data, bin_size=None):
     n_bins = n_samples // bin_size
     trimmed_activity = network_activity[:n_bins * bin_size] # trim to fit bins
     binned_array = trimmed_activity.reshape(n_bins, bin_size).sum(axis=1)
-    return binned_array
+    return binned_array, bin_size
 
-def detect_avalanches(binned_array):
+def detect_avalanches(binned_array, bin_size):
     r"""
     Detect avalanche start and end indices in the binned array.
 
@@ -135,6 +135,7 @@ def detect_avalanches(binned_array):
         Dictionary with keys:
         - 'data': original binned_array
         - 'indices': np.ndarray of shape (n_avalanches, 2) with start and end indices of each avalanche.
+        - 'bin_size': int, the bin size used.
     """
     is_active = binned_array > 0
     n = len(is_active)
@@ -160,5 +161,6 @@ def detect_avalanches(binned_array):
 
     return {
         'data': binned_array,
-        'indices': np.column_stack((start_indices, end_indices))
+        'indices': np.column_stack((start_indices, end_indices)),
+        'bin_size': bin_size
     }
