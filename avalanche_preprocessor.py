@@ -10,7 +10,7 @@ import numpy as np
 import scipy.ndimage as ndi
 from scipy.stats import median_abs_deviation
 
-def avalanche_preprocessor(data, k=3.0, thresholding='std'):
+def avalanche_preprocessor(data, fs, k=3.0, thresholding='std'):
     r"""
     Detect avalanche events in the data.
 
@@ -18,6 +18,8 @@ def avalanche_preprocessor(data, k=3.0, thresholding='std'):
     ------
     data : np.ndarray
         Input data array of size (n_channels, n_samples).
+    fs : float
+        Sampling frequency of the data in Hz.
     k : float
         Threshold multiplier for standard deviation.
     thresholding : str
@@ -28,7 +30,8 @@ def avalanche_preprocessor(data, k=3.0, thresholding='std'):
     res : np.ndarray
         Binary array (uint8) of the same shape as data, 
         with 1s at the absolute peak of each detected event.
-
+    fs : float
+        Sampling frequency (passed through).
     """
     # compute absolute normalized data
     if thresholding == 'std':
@@ -66,7 +69,7 @@ def avalanche_preprocessor(data, k=3.0, thresholding='std'):
         rows, cols = zip(*max_positions)
         binary_data[rows, cols] = 1
 
-    return binary_data
+    return binary_data, fs
 
 def _optimal_bin_size(binary_data):
     r"""
@@ -79,8 +82,8 @@ def _optimal_bin_size(binary_data):
 
     Returns
     -------
-    optimal_bin_size : int
-        Optimal bin size for binning avalanches.
+    int
+        Optimal bin size (in samples) for binning avalanches.
 
     Notes
     -----
@@ -94,7 +97,7 @@ def _optimal_bin_size(binary_data):
     ieis = np.diff(active_indices)
     return int(np.round(np.mean(ieis)))
 
-def bin_avalanches(binary_data, bin_size=None):
+def bin_avalanches(binary_data, fs, bin_size_sec=None):
     r"""
     Bin avalanche events into contiguous time bins.
 
@@ -102,25 +105,37 @@ def bin_avalanches(binary_data, bin_size=None):
     ------
     binary_data : np.ndarray
         Binary array of size (n_channels, n_samples) indicating avalanche events.
+    fs : float
+        Sampling frequency of the data in Hz.
+    bin_size_sec : float, optional
+        Size of each bin in seconds. If None, the optimal bin size is computed.
 
     Returns
     -------
     binned_array : np.ndarray
         1-D ndarray of binned avalanche events.
+    bin_size_sec : float
+        The bin size used in seconds.
     """
-    if bin_size is None:
-        bin_size = _optimal_bin_size(binary_data)
+    if bin_size_sec is None:
+        bin_size_samples = _optimal_bin_size(binary_data) # >=1
+        bin_size_sec = bin_size_samples / fs
     else:
-        bin_size = int(bin_size)
+        bin_size_samples = int(np.round(bin_size_sec * fs))
+        if bin_size_samples < 1:
+            bin_size_samples = 1
+            bin_size_sec = 1.0 / fs
 
     network_activity = np.sum(binary_data, axis=0)
     n_samples = network_activity.shape[0]
-    n_bins = n_samples // bin_size
-    trimmed_activity = network_activity[:n_bins * bin_size] # trim to fit bins
-    binned_array = trimmed_activity.reshape(n_bins, bin_size).sum(axis=1)
-    return binned_array, bin_size
+    n_bins = n_samples // bin_size_samples
+    trimmed_activity = network_activity[:n_bins * bin_size_samples] # trim to fit bins
 
-def detect_avalanches(binned_array, bin_size):
+    binned_array = trimmed_activity.reshape(n_bins, bin_size_samples).sum(axis=1)
+
+    return binned_array, bin_size_sec
+
+def detect_avalanches(binned_array, bin_size_sec):
     r"""
     Detect avalanche start and end indices in the binned array.
 
@@ -128,6 +143,8 @@ def detect_avalanches(binned_array, bin_size):
     ------
     binned_array : np.ndarray
         1-D ndarray of binned avalanche events.
+    bin_size_sec : float
+        The bin size used in seconds.
 
     Returns
     ------- 
@@ -135,13 +152,17 @@ def detect_avalanches(binned_array, bin_size):
         Dictionary with keys:
         - 'data': original binned_array
         - 'indices': np.ndarray of shape (n_avalanches, 2) with start and end indices of each avalanche.
-        - 'bin_size': int, the bin size used.
+        - 'bin_size_sec': float, the bin size used (in seconds).
     """
     is_active = binned_array > 0
     n = len(is_active)
 
     if n == 0 or not np.any(is_active):
-        return np.empty((0, 2), dtype=int)
+        return {
+            'data': binned_array,
+            'indices': np.empty((0, 2), dtype=int),
+            'bin_size_sec': bin_size_sec
+        }   
     
     # Find start and end indices
     starts_mask = np.zeros(n, dtype=bool)
@@ -162,5 +183,5 @@ def detect_avalanches(binned_array, bin_size):
     return {
         'data': binned_array,
         'indices': np.column_stack((start_indices, end_indices)),
-        'bin_size': bin_size
+        'bin_size_sec': bin_size_sec
     }
