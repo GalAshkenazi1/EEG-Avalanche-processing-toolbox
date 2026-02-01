@@ -3,8 +3,10 @@ r"""Avalanche preprocessing and binning functions.
 Basic avalanche detection and binning functions:
 
 - avalanche_preprocessor: detect avalanche events in data
+- _optimal_bin_size: determine optimal bin size for avalanche detection
 - bin_avalanches: bin avalanche events into contiguous time bins
-- _optimal_bin_size: determine optimal bin size for avalanche detection"""
+- detect_avalanches: detect avalanche start and end indices in binned array
+"""
 
 import numpy as np
 import scipy.ndimage as ndi
@@ -152,9 +154,11 @@ def detect_avalanches(binned_array, bin_size_sec):
         Dictionary with keys:
         - 'data': original binned_array
         - 'indices': np.ndarray of shape (n_avalanches, 2) with start and end indices of each avalanche.
+            the end index is inclusive.
         - 'bin_size_sec': float, the bin size used (in seconds).
+
     """
-    is_active = binned_array > 0
+    is_active = (binned_array > 0).astype(int)
     n = len(is_active)
 
     if n == 0 or not np.any(is_active):
@@ -164,21 +168,21 @@ def detect_avalanches(binned_array, bin_size_sec):
             'bin_size_sec': bin_size_sec
         }   
     
-    # Find start and end indices
-    starts_mask = np.zeros(n, dtype=bool)
-    starts_mask[1:] = is_active[1:] & ~is_active[:-1]
-    start_indices = np.where(starts_mask)[0]
+    diffs = np.diff(is_active, prepend=0, append=0) # pad to detect edges
 
-    ends_mask = np.zeros(n, dtype=bool)
-    ends_mask[:-1] = is_active[:-1] & ~is_active[1:]
-    end_indices = np.where(ends_mask)[0]
+    start_indices = np.where(diffs == 1)[0]
+    end_indices = np.where(diffs == -1)[0] - 1 # end is inclusive
 
-    # Handle edge cases
-    if len(end_indices) > 0:
-        if len(start_indices) == 0 or end_indices[0] < start_indices[0]:
+    # Filter edge cases
+    if len(start_indices) > 0:
+        if start_indices[0] == 0:
+            start_indices = start_indices[1:]
             end_indices = end_indices[1:]
-    if len(start_indices) > len(end_indices):
-        start_indices = start_indices[:len(end_indices)]
+        if len(end_indices) > 0:
+            last_bin_idx = len(binned_array) - 1
+            if end_indices[-1] == last_bin_idx:
+                start_indices = start_indices[:-1]
+                end_indices = end_indices[:-1]
 
     return {
         'data': binned_array,
