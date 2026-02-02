@@ -12,7 +12,7 @@ import numpy as np
 from scipy.optimize import minimize_scalar
 
 def _fit_truncated_power_law(data, system_size=None, xmin_range=range(1, 11), n_min=20, 
-                            xmax_search_step=5):
+                            xmax_search_step=1):
     r"""
     Estimates the power-law exponent using a Truncated Maximum Likelihood Estimation (MLE) 
     combined with Kolmogorov-Smirnov (KS) distance minimization.
@@ -27,7 +27,7 @@ def _fit_truncated_power_law(data, system_size=None, xmin_range=range(1, 11), n_
     data : np.ndarray
         A 1-D array of avalanche metrics (e.g., sizes or durations). 
     system_size : int, optional
-        The physical limit of the recording system (e.g., the total number of electrodes). 
+        The physical limit of the recording system (e.g., the total number of channels). 
         If provided, it defines the search upper bound.
         If None, the search range is capped at the maximum observed value in the data.
     xmin_range : range, default=range(1, 11)
@@ -76,12 +76,12 @@ def _fit_truncated_power_law(data, system_size=None, xmin_range=range(1, 11), n_
     
     if system_size is not None:
         # typical for sizes
-        xmax_candidates = range(xmin_range[-1] + 1, int(1.5 * system_size) + 1)
+        xmax_candidates = range(xmin_range[-1] + 1, int(1.5 * system_size) + 1, xmax_search_step)
     else:
         # typical for durations
         xmax_candidates = range(xmin_range[-1] + 1, int(s_max_data) + 1, xmax_search_step)
 
-    # Filter candidates
+    # Filter candidates 
     xmaxs_valid = [x for x in xmax_candidates if x <= s_max_data]
     
     if not xmaxs_valid:
@@ -149,7 +149,6 @@ def _fit_truncated_power_law(data, system_size=None, xmin_range=range(1, 11), n_
             # --- KS Distance Calculation ---
 
             # Theoretical CDF
-            x_vals = np.arange(xmin, xmax + 1)
             pdf_theory = x_vals ** (-exponent)
             pdf_theory /= pdf_theory.sum() # Normalize
             cdf_theory = np.cumsum(pdf_theory)
@@ -278,6 +277,7 @@ def alpha_exponent(avalanche_dict, system_size=None):
     sizes = np.add.reduceat(binned_array, indices[:, 0]) # C-level array operation
 
     if system_size is None:
+        Warning.warn("system_size not provided. Alpha exponent fit may be unreliable.")
         system_size = np.max(sizes) if sizes.size > 0 else None
 
     fit_results = _fit_truncated_power_law(sizes, system_size=system_size)
