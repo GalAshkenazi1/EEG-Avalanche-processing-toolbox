@@ -4,6 +4,7 @@ r"""1st-Generation Avalanche analysis functions
 - alpha_exponent: calculate alpha exponent of avalanche size distribution
 - tau_exponent: calculate tau exponent of avalanche duration distribution
 """
+import warnings
 import numpy as np
 from utils import _fit_truncated_power_law
 
@@ -89,7 +90,7 @@ def branching_parameter(avalanche_dict: dict,
     return sigma
 
 def alpha_exponent(avalanche_dict: dict, 
-                   n_channels: int = None) -> float:
+                   n_channels: int = None) -> tuple[float, dict]:
     r"""
     Calculate the Alpha exponent of avalanche size distribution.
 
@@ -123,10 +124,10 @@ def alpha_exponent(avalanche_dict: dict,
     else:
         fit_results = _fit_truncated_power_law(sizes, system_size=n_channels)
 
-    return fit_results['exponent']
+    return fit_results['exponent'], fit_results
 
 def tau_exponent(avalanche_dict: dict, 
-                 t_max_method: str = 'max') -> float:
+                 t_max_method: str = 'max') -> tuple[float, dict]:
     r"""
     Calculate the tau exponent of avalanche duration distribution.
 
@@ -172,4 +173,117 @@ def tau_exponent(avalanche_dict: dict,
     
     fit_results = _fit_truncated_power_law(durations_bins, system_size=t_max)
 
-    return fit_results['exponent']
+    return fit_results['exponent'], fit_results
+
+def gamma_exponent(avalanche_dict: dict,
+                   min_unique_durations: int = 3) -> float:
+    r"""
+    Estimate the Gamma exponent of the scaling relationship between avalanche size and duration.
+    
+    Params
+    ------
+    avalanche_dict : dict
+        Dictionary with keys:
+        - 'data': 1-D ndarray of binned avalanche events.
+        - 'indices': np.ndarray of shape (n_avalanches, 2).
+    min_unique_durations : int, optional
+        Minimum number of unique durations required to perform the fit.
+
+    Returns
+    -------
+    gamma_obs : float
+        Gamma exponent of the scaling relationship between avalanche size and duration.
+        Returns np.nan if not enough avalanches are detected or if all durations are the same.
+    
+    Notes
+    -----
+    This is a scaling relationship, and not a probability distribution fit. Therefore, use
+    the continuous power-law fitting approach (log-log linear regression), instead of the
+    dicrete MLE approach used for alpha and tau.
+    """
+    indices = avalanche_dict['indices']
+    binned_array = avalanche_dict['data']
+
+    if indices.shape[0] == 0:
+        return np.nan
+
+    sizes = np.add.reduceat(binned_array, indices[:, 0])
+    durations = indices[:, 1] - indices[:, 0] + 1
+    unique_durations = np.unique(durations)
+
+    if len(unique_durations) < min_unique_durations:
+        return np.nan
+    
+    avg_sizes = []
+    for t in unique_durations:
+        avg_sizes.append(np.mean(sizes[durations == t]))
+
+    avg_sizes = np.array(avg_sizes)
+
+    log_t = np.log10(unique_durations)
+    log_s = np.log10(avg_sizes)
+
+    gamma_obs, _ = np.polyfit(log_t, log_s, 1)
+
+    return float(gamma_obs)
+
+def dcc(alpha_dict: dict, 
+        tau_dict: dict,
+        gamma_obs: float,
+        tolerance: float = 0.1) -> float:
+    r"""
+    Calculate the Deviation from Criticality Coefficient (DCC) based on the observed exponents:
+
+    $$ DCC = | \gamma_{obs} - \gamma_{pred} | $$
+
+    Where: $$ \gamma_{pred} = \frac{\tau - 1}{\alpha - 1} $$
+
+    Params
+    ------
+    alpha_dict : dict
+        Dictionary containing the alpha exponent and fit results for avalanche size distribution.
+    tau_dict : dict
+        Dictionary containing the tau exponent and fit results for avalanche duration distribution.
+    gamma_obs : float
+        Observed Gamma exponent of the scaling relationship between avalanche size and duration.
+    tolerance : float, optional
+        Tolerance for checking the consistency of the size and duration ranges used for fitting.
+
+    Returns
+    -------
+    dcc_value : float
+        Deviation from Criticality Coefficient (DCC). A value close to 0 indicates criticality.
+
+    Warnings
+    --------
+    - If the size and duration ranges used for fitting are inconsistent with the observed Gamma.
+    """
+    alpha = alpha_dict['exponent']
+    tau = tau_dict['exponent']
+
+    if np.isnan(gamma_obs) or np.isnan(alpha) or np.isnan(tau):
+        return np.nan
+    
+    # Verify alpha and tau were computed on similar ranges.
+    s_min, s_max = alpha_dict.get('xmin', np.nan), alpha_dict.get('cutoff', np.nan)
+    t_min, t_max = tau_dict.get('xmin', np.nan), tau_dict.get('cutoff', np.nan)
+    
+    if not any(np.isnan([s_min, s_max, t_min, t_max])):
+        
+        log_ratio_s = np.log10(s_max / s_min)
+        log_ratio_t = np.log10(t_max / t_min)
+        
+        expected_log_ratio_s = gamma_obs * log_ratio_t
+
+        deviation = abs(log_ratio_s - expected_log_ratio_s) / (expected_log_ratio_s + 1e-9)
+        
+        if deviation > tolerance:
+            warnings.warn(
+                f"DCC Range Mismatch: Size range ({log_ratio_s:.2f} dec) is inconsistent "
+                f"with Duration range ({log_ratio_t:.2f} dec) given Gamma={gamma_obs:.2f}. "
+                f"Deviation: {deviation:.0%}. DCC may be unreliable."
+            )
+            return np.nan # consider still returining the DCC value, but flag it as unreliable.
+    
+    gamma_pred = (tau - 1) / (alpha - 1)
+    return abs(gamma_obs - gamma_pred)
