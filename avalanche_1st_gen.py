@@ -3,6 +3,8 @@ r"""1st-Generation Avalanche analysis functions
 - branching_parameter: calculate branching parameter of avalanches
 - alpha_exponent: calculate alpha exponent of avalanche size distribution
 - tau_exponent: calculate tau exponent of avalanche duration distribution
+- gamma_exponent: calculate gamma exponent of the scaling relationship between avalanche size and duration
+- dcc: calculate Deviation from Criticality Coefficient (DCC) based on the observed exponents
 """
 import warnings
 import numpy as np
@@ -230,7 +232,7 @@ def gamma_exponent(avalanche_dict: dict,
 def dcc(alpha_dict: dict, 
         tau_dict: dict,
         gamma_obs: float,
-        tolerance: float = 0.1) -> float:
+        tolerance: float = 0.3) -> float:
     r"""
     Calculate the Deviation from Criticality Coefficient (DCC) based on the observed exponents:
 
