@@ -80,7 +80,7 @@ def bin_avalanches(binary_data: np.ndarray,
                    fs: float, 
                    bin_size_sec: float = None,
                    bin_size_samples: int = None,
-                   n_bins: int = None) -> tuple[np.ndarray, float, float]:
+                   n_bins: int = None) -> tuple[np.ndarray, float, float, int]:
     r"""
     Bin avalanche events into contiguous time bins.
 
@@ -105,6 +105,8 @@ def bin_avalanches(binary_data: np.ndarray,
         Sampling frequency (passed through).
     bin_size_sec : float
         The bin size used in seconds.
+    actual_n_bins : int
+        The number of bins used after trimming the data.
 
     Notes
     -----
@@ -135,11 +137,12 @@ def bin_avalanches(binary_data: np.ndarray,
 
     binned_array = trimmed_activity.reshape(actual_n_bins, bin_size_samples).sum(axis=1)
 
-    return binned_array, fs, bin_size_sec
+    return binned_array, fs, bin_size_sec, actual_n_bins
 
 def detect_avalanches(binned_array: np.ndarray, 
                       fs: float, 
-                      bin_size_sec: float) -> dict:
+                      bin_size_sec: float,
+                      n_bins: int) -> dict:
     r"""
     Detect avalanche start and end indices in the binned array.
 
@@ -155,9 +158,11 @@ def detect_avalanches(binned_array: np.ndarray,
     avalanche_dict : dict
         Dictionary with keys:
         - 'data': original binned_array
+        - 'fs': float, the sampling frequency (passed through).
         - 'indices': np.ndarray of shape (n_avalanches, 2) with start and end indices of each avalanche.
             the end index is inclusive.
         - 'bin_size_sec': float, the bin size used (in seconds).
+        - 'n_bins': int, the number of bins in the binned array.
 
     """
     is_active = (binned_array > 0).astype(int)
@@ -168,7 +173,8 @@ def detect_avalanches(binned_array: np.ndarray,
             'data': binned_array,
             'fs': fs,
             'indices': np.empty((0, 2), dtype=int),
-            'bin_size_sec': bin_size_sec
+            'bin_size_sec': bin_size_sec,
+            'n_bins': n_bins
         }   
     
     diffs = np.diff(is_active, prepend=0, append=0) # pad to detect edges
@@ -191,7 +197,8 @@ def detect_avalanches(binned_array: np.ndarray,
         'data': binned_array,
         'fs': fs,
         'indices': np.column_stack((start_indices, end_indices)),
-        'bin_size_sec': bin_size_sec
+        'bin_size_sec': bin_size_sec,
+        'n_bins': n_bins
     }
 
 # Example usage
@@ -207,8 +214,8 @@ if __name__ == "__main__":
 
     # preprocess and bin avalanches
     binary_data, fs = avalanche_preprocessor(data, fs, k=2.0, thresholding='std')
-    binned_array, fs, bin_size_sec = bin_avalanches(binary_data, fs, bin_size_sec=0.1)
-    avalanche_dict = detect_avalanches(binned_array, fs, bin_size_sec)
+    binned_array, fs, bin_size_sec, n_bins = bin_avalanches(binary_data, fs, bin_size_sec=0.1)
+    avalanche_dict = detect_avalanches(binned_array, fs, bin_size_sec, n_bins)
 
     print("Avalanche indices (start_bin, end_bin):")
     print(avalanche_dict['indices'])
