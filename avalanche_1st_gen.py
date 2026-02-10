@@ -1,5 +1,6 @@
 r"""
 1st-Generation Avalanche analysis functions
+- _nll: negative log-likelihood function for discrete truncated power-law
 - _fit_truncated_power_law: fit truncated power-law to avalanche data
 - branching_parameter: calculate branching parameter of avalanches
 - alpha_exponent: calculate alpha exponent of avalanche size distribution
@@ -11,8 +12,50 @@ import scipy.ndimage as ndi
 import numpy as np
 from scipy.optimize import minimize_scalar
 
-def _fit_truncated_power_law(data, system_size=None, xmin_range=range(1, 11), n_min=20, 
-                            xmax_search_step=1):
+def _nll(exponent: float, 
+         x_vals_logs: np.ndarray, 
+         sum_log_data: float, 
+         n: int) -> float:
+    r"""
+    Calculate the Negative Log-Likelihood (NLL) for a discrete truncated power-law distribution.
+
+    The NLL is derived from the probability mass function (PMF):
+    $$P(x) = \frac{x^{-\gamma}}{Z(\gamma, x_{min}, x_{max})}$$
+    where $Z$ is the transcendental Hurwitz zeta-like normalization constant:
+    $$Z(\gamma, x_{min}, x_{max}) = \sum_{k=x_{min}}^{x_{max}} k^{-\gamma}$$
+
+    The objective function to minimize is:
+    $$\mathcal{L}(\gamma) = \gamma \sum_{i=1}^{n} \ln(x_i) + n \ln \left( \sum_{k=x_{min}}^{x_{max}} k^{-\gamma} \right)$$
+
+    Parameters
+    ----------
+    exponent : float
+        The power-law exponent ($\gamma$) being optimized.
+    x_vals_logs : np.ndarray
+        Logarithm of the discrete x values in the fitting range.
+    sum_log_data : float
+        The sum of the logarithm of the observed data points in the fitting range.
+    n : int
+        The number of data points in the fitting range.
+
+    Returns
+    -------
+    float
+        The negative log-likelihood value. Returns infinity if the exponent $\le 1$ 
+        or if the normalization factor $Z$ is non-finite.
+"""
+    if exponent <= 1: 
+        return np.inf
+    Z = np.sum(np.exp(-exponent * x_vals_logs)) # np.sum(x_vals ** (-exponent))
+    if Z <= 0 or not np.isfinite(Z): 
+        return np.inf
+    return exponent * sum_log_data + n * np.log(Z)
+
+def _fit_truncated_power_law(data: np.ndarray, 
+                             system_size: int, 
+                             n_min: int = 500, 
+                             cutoff_search_step: int = 1,
+                             xmin: int = 1) -> dict:
     r"""
     Estimates the power-law exponent using a Truncated Maximum Likelihood Estimation (MLE) 
     combined with Kolmogorov-Smirnov (KS) distance minimization.
@@ -28,15 +71,14 @@ def _fit_truncated_power_law(data, system_size=None, xmin_range=range(1, 11), n_
         A 1-D array of avalanche metrics (e.g., sizes or durations). 
     system_size : int, optional
         The physical limit of the recording system (e.g., the total number of channels). 
-        If provided, it defines the search upper bound.
         If None, the search range is capped at the maximum observed value in the data.
-    xmin_range : range, default=range(1, 11)
-        A sequence of candidate values for the lower bound cutoff (xmin).
-    n_min : int, default=20
-        The minimum number of data points required within a [xmin, xmax] window 
+    n_min : int, default=500
+        The minimum number of data points required within a [xmin, cutoff] window 
         to consider a fit statistically reliable.
-    xmax_search_step : int, default=5
-        The step size for searching candidate upper bound cutoffs (xmax) when system_size is not provided.
+    cutoff_search_step : int, default=1
+        The step size for searching cutoff candidates.
+    xmin : int, default=1
+        The lower bound of the fitting range. Must be >= 1 for discrete power-law.
 
     Returns
     -------
@@ -46,130 +88,89 @@ def _fit_truncated_power_law(data, system_size=None, xmin_range=range(1, 11), n_
         * 'exponent' (float): The estimated power-law index. It represents the probability 
           density function slope $P(x) \propto x^{-exponent}$.
         * 'xmin' (float): The lower bound of the optimal fitting window.
-        * 'xmax' (float): The upper bound of the optimal fitting window.
+        * 'cutoff' (float): The upper bound of the optimal fitting window.
         * 'ks' (float): The Kolmogorov-Smirnov distance. Lower values indicate a better fit.
-        * 'n_tail' (int): The number of individual avalanche events contained 
-          within the selected [xmin, xmax] range.
+        * 'n_included' (int): The number of individual avalanche events contained 
+          within the selected [xmin, cutoff] range.
 
-    Notes
-    -----
-    The grid search minimizes the KS distance across all valid [xmin, xmax] pairs. 
-    For each window, an MLE fit is performed by minimizing the negative log-likelihood 
-    of a discrete power law specifically normalized over that truncated interval.
     """
-
-    # Data Preparation
+    assert system_size != None and system_size > 0, "system_size must be a positive integer."
+    
+    # Data preparation
     data = np.asarray(data, dtype=float)
     data = data[np.isfinite(data)]
     data = data[data >= 1]
     
     if data.size < n_min:
-        return {'exponent': np.nan, 'xmin': np.nan, 'xmax': np.nan, 'ks': np.nan, 'n_tail': 0}
+        return {'exponent': np.nan, 
+                'xmin': np.nan, 
+                'cutoff': np.nan, 
+                'ks': np.nan, 
+                'n_included': 0}
 
     data = np.sort(data)
+    maxdata = data[-1]
 
-    # Precompute cumulative sum of logs for O(1) MLE calculation
-    # Insert 0 at the beginning to handle the index logic easily
-    log_data_cumsum = np.insert(np.cumsum(np.log(data)), 0, 0.0)
+    # Cutoff definition
+    lower_bound = int(0.8 * system_size)
+    upper_bound = int(1.5 * system_size)
+    cutoff_candidates = range(lower_bound, upper_bound + 1, cutoff_search_step)
+    cutoff_valid = [_ for _ in cutoff_candidates if _ <= maxdata] 
+    if not cutoff_valid:
+        cutoff_valid = [int(maxdata)]
 
-    s_max_data = data[-1]
-    
-    if system_size is not None:
-        # typical for sizes
-        xmax_candidates = range(xmin_range[-1] + 1, int(1.5 * system_size) + 1, xmax_search_step)
-    else:
-        # typical for durations
-        xmax_candidates = range(xmin_range[-1] + 1, int(s_max_data) + 1, xmax_search_step)
-
-    # Filter candidates 
-    xmaxs_valid = [x for x in xmax_candidates if x <= s_max_data]
-    
-    if not xmaxs_valid:
-        xmaxs_valid = [int(s_max_data)]
-
-    # Grid Search (Minimize KS)
+    # --- Grid Search (Minimize KS) ---
     best_ks = np.inf
-    best_params = {'exponent': np.nan, 'xmin': np.nan, 'xmax': np.nan, 'ks': np.nan, 'n_tail': 0}
-
-    for xmin in xmin_range:
-        if xmin >= s_max_data:
+    best_params = {'exponent': np.nan, 
+                   'xmin': np.nan, 
+                   'cutoff': np.nan, 
+                   'ks': np.nan, 
+                   'n_included': 0}
+        
+    start_idx = np.searchsorted(data, xmin, side='left')
+    log_data_cumsum = np.insert(np.cumsum(np.log(data)), 0, 0.0)
+    
+    for cutoff in cutoff_valid:
+        end_idx = np.searchsorted(data, cutoff, side='right')
+        n = end_idx - start_idx        
+        if n < n_min:
             continue
+
+        # --- MLE Fit ---
+        x_vals = np.arange(xmin, cutoff + 1)
+        x_vals_logs = np.log(x_vals)
+        sum_log_data = log_data_cumsum[end_idx] - log_data_cumsum[start_idx]
+
+        res = minimize_scalar(_nll, 
+                              bounds=(1.0001, 10), 
+                              method="bounded",
+                              args=(x_vals_logs, sum_log_data, n))
+        exponent = float(res.x)
+
+        # --- KS Distance Calculation ---
+
+        # Theoretical CDF
+        pdf_theory = np.exp(-exponent * x_vals_logs) # x_vals ** (-exponent)
+        pdf_theory /= pdf_theory.sum() # Normalize
+        cdf_theory = np.cumsum(pdf_theory)
         
-        start_idx = np.searchsorted(data, xmin, side='left')
-        
-        for xmax in xmaxs_valid:
-            if xmax <= xmin:
-                continue
-            
-            end_idx = np.searchsorted(data, xmax, side='right')
+        # Empirical CDF
+        window_slice = data[start_idx:end_idx]
+        cdf_emp = np.searchsorted(window_slice, x_vals, side="right") / n
 
-            n = end_idx - start_idx            
-            if n < n_min:
-                continue
+        # Compute KS
+        ks = np.max(np.abs(cdf_emp - cdf_theory))
 
-            # --- MLE Fit ---
-            sum_log_data = log_data_cumsum[end_idx] - log_data_cumsum[start_idx]
-            x_vals = np.arange(xmin, xmax + 1)
-
-            # Negative Log-Likelihood Function
-            def _nll(exponent):
-                r"""
-                Calculate the Negative Log-Likelihood (NLL) for a discrete truncated power-law distribution.
-
-                The NLL is derived from the probability mass function (PMF):
-                $$P(x) = \frac{x^{-\gamma}}{Z(\gamma, x_{min}, x_{max})}$$
-                where $Z$ is the transcendental Hurwitz zeta-like normalization constant:
-                $$Z(\gamma, x_{min}, x_{max}) = \sum_{k=x_{min}}^{x_{max}} k^{-\gamma}$$
-
-                The objective function to minimize is:
-                $$\mathcal{L}(\gamma) = \gamma \sum_{i=1}^{n} \ln(x_i) + n \ln \left( \sum_{k=x_{min}}^{x_{max}} k^{-\gamma} \right)$$
-
-                Parameters
-                ----------
-                exponent : float
-                    The power-law exponent ($\gamma$) being optimized.
-
-                Returns
-                -------
-                float
-                    The negative log-likelihood value. Returns infinity if the exponent $\le 1$ 
-                    or if the normalization factor $Z$ is non-finite.
-            """
-                if exponent <= 1: 
-                    return np.inf
-                Z = np.sum(x_vals ** (-exponent))
-                if Z <= 0 or not np.isfinite(Z): 
-                    return np.inf
-                return exponent * sum_log_data + n * np.log(Z)
-
-            # Optimization
-            res = minimize_scalar(_nll, bounds=(1.0001, 10), method="bounded")
-            exponent = float(res.x)
-
-            # --- KS Distance Calculation ---
-
-            # Theoretical CDF
-            pdf_theory = x_vals ** (-exponent)
-            pdf_theory /= pdf_theory.sum() # Normalize
-            cdf_theory = np.cumsum(pdf_theory)
-            
-            # Empirical CDF
-            window_slice = data[start_idx:end_idx]
-            cdf_emp = np.searchsorted(window_slice, x_vals, side="right") / n
-
-            # Compute KS
-            ks = np.max(np.abs(cdf_emp - cdf_theory))
-
-            # --- Update Best Fit ---
-            if ks < best_ks:
-                best_ks = ks
-                best_params = {
-                    'exponent': exponent,
-                    'xmin': xmin,
-                    'xmax': xmax,
-                    'ks': ks,
-                    'n_tail': n
-                }
+        # --- Update Best Fit ---
+        if ks < best_ks:
+            best_ks = ks
+            best_params = {
+                'exponent': exponent,
+                'xmin': xmin,
+                'cutoff': cutoff,
+                'ks': ks,
+                'n_included': n
+            }
     
     return best_params
 
@@ -227,6 +228,7 @@ def branching_parameter(avalanche_dict, method='naive', n_electrodes=None):
         sigma = np.mean(n_d / n_a)
 
     elif method == 'weighted':
+        # TODO: check if this is correct
         sigma = np.sum(n_d) / np.sum(n_a)
 
     elif method == 'corrected':
@@ -309,7 +311,7 @@ def tau_exponent(avalanche_dict):
         return np.nan
 
     durations_bins = indices[:, 1] - indices[:, 0] + 1
-
+    # TODO: system_size for durations?
     fit_results = _fit_truncated_power_law(durations_bins, system_size=None)
 
     return fit_results['exponent']
