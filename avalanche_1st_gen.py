@@ -7,9 +7,6 @@ r"""
 - tau_exponent: calculate tau exponent of avalanche duration distribution"""
 
 import numpy as np
-import scipy.ndimage as ndi
-
-import numpy as np
 from scipy.optimize import minimize_scalar
 
 def _nll(exponent: float, 
@@ -174,7 +171,9 @@ def _fit_truncated_power_law(data: np.ndarray,
     
     return best_params
 
-def branching_parameter(avalanche_dict, method='naive', n_electrodes=None):
+def branching_parameter(avalanche_dict: dict, 
+                        method: str = 'naive', 
+                        n_channels: int = None) -> float:
     r"""
     Calculate the branching parameter of avalanche events.
     
@@ -190,8 +189,8 @@ def branching_parameter(avalanche_dict, method='naive', n_electrodes=None):
         * 'weighted': Ratio of sums.
         * 'corrected': Weighted method with refractoriness correction.
           Default is 'naive'.
-    n_electrodes : int, optional
-        Total number of electrodes/channels in the recording. 
+    n_channels : int, optional
+        Total number of channels in the recording. 
         Required only for 'corrected' method.
 
     Returns
@@ -230,30 +229,33 @@ def branching_parameter(avalanche_dict, method='naive', n_electrodes=None):
     elif method == 'weighted':
         # TODO: check if this is correct
         sigma = np.sum(n_d) / np.sum(n_a)
+        Warning.warn("Weighted method wasn't varified.")
 
     elif method == 'corrected':
-        if n_electrodes is None:
-            raise ValueError("n_electrodes must be provided for corrected method.")
+        if n_channels is None:
+            raise ValueError("n_channels must be provided for corrected method.")
 
-        denom_correction = n_electrodes - n_a
+        denom_correction = n_channels - n_a
         valid = denom_correction > 0
 
         valid_n_a = n_a[valid]
         if len(valid_n_a) == 0:
             return 0.0
 
-        correction_factor = (n_electrodes - 1) / denom_correction[valid]
+        correction_factor = (n_channels - 1) / denom_correction[valid]
         corrected_descendants = n_d[valid] * correction_factor
         sigma = np.sum(corrected_descendants) / np.sum(valid_n_a)
+        Warning.warn("Corrected method wasn't varified.")
 
     else:
         raise ValueError(f"Unsupported method: {method}")
     
     return sigma
 
-def alpha_exponent(avalanche_dict, system_size=None):
+def alpha_exponent(avalanche_dict: dict, 
+                   n_channels: int = None) -> float:
     r"""
-    Calculate the alpha exponent of avalanche size distribution.
+    Calculate the Alpha exponent of avalanche size distribution.
 
     Params
     ------
@@ -261,8 +263,8 @@ def alpha_exponent(avalanche_dict, system_size=None):
         Dictionary with keys:
         - 'data': 1-D ndarray of binned avalanche events
         - 'indices': np.ndarray of shape (n_avalanches, 2) with start and end indices of each avalanche.
-    system_size : int, optional
-        The physical limit of the recording system (e.g., the total number of electrodes).
+    n_channels : int, optional
+        The physical limit of the recording system (e.g., the total number of channels).
 
     Returns
     -------
@@ -278,15 +280,17 @@ def alpha_exponent(avalanche_dict, system_size=None):
 
     sizes = np.add.reduceat(binned_array, indices[:, 0]) # C-level array operation
 
-    if system_size is None:
-        Warning.warn("system_size not provided. Alpha exponent fit may be unreliable.")
+    if n_channels is None:
+        Warning.warn("n_channels not provided. Alpha exponent fit may be unreliable.")
         system_size = np.max(sizes) if sizes.size > 0 else None
-
-    fit_results = _fit_truncated_power_law(sizes, system_size=system_size)
+        fit_results = _fit_truncated_power_law(sizes, system_size=system_size)
+    else:
+        fit_results = _fit_truncated_power_law(sizes, system_size=n_channels)
 
     return fit_results['exponent']
 
-def tau_exponent(avalanche_dict):
+def tau_exponent(avalanche_dict: dict, 
+                 t_max_method: str = 'max') -> float:
     r"""
     Calculate the tau exponent of avalanche duration distribution.
 
@@ -299,6 +303,12 @@ def tau_exponent(avalanche_dict):
     avalanche_dict : dict
             Dictionary with keys:
             - 'indices': np.ndarray of shape (n_avalanches, 2) with start and end indices of each avalanche.
+            - 'data': 1-D ndarray of binned avalanche events.
+            - 'n_bins': the number of bins in the binned array.
+    t_max_method : str, optional
+        Method to determine the maximum duration (t_max) for fitting:
+        * 'max': Use the maximum observed duration in the data.
+        * 'lab': Use the theoretical t_max based on the maximum avalanche size and average activity.
 
     Returns
     -------
@@ -311,7 +321,19 @@ def tau_exponent(avalanche_dict):
         return np.nan
 
     durations_bins = indices[:, 1] - indices[:, 0] + 1
-    # TODO: system_size for durations?
-    fit_results = _fit_truncated_power_law(durations_bins, system_size=None)
+    
+    if t_max_method == 'max':
+        t_max = np.max(durations_bins)
+    elif t_max_method == 'lab':
+        # Compute theoretical t_max based on maximun avalanche size
+        binned_array = avalanche_dict['data']
+        n_bins = avalanche_dict['n_bins']
+        max_size = np.max(np.add.reduceat(binned_array, indices[:, 0]))
+        coeff = np.sum(binned_array) / n_bins
+        t_max = np.sqrt(max_size / coeff)
+    else:
+        raise ValueError(f"Unsupported t_max_method: {t_max_method}")
+    
+    fit_results = _fit_truncated_power_law(durations_bins, system_size=t_max)
 
     return fit_results['exponent']
