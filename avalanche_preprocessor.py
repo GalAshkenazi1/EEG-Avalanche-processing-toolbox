@@ -1,9 +1,7 @@
 r"""Avalanche preprocessing and binning functions.
 
 Basic avalanche detection and binning functions:
-
 - avalanche_preprocessor: detect avalanche events in data
-- _optimal_bin_size: determine optimal bin size for avalanche detection
 - bin_avalanches: bin avalanche events into contiguous time bins
 - detect_avalanches: detect avalanche start and end indices in binned array
 """
@@ -12,7 +10,12 @@ import numpy as np
 import scipy.ndimage as ndi
 from scipy.stats import median_abs_deviation
 
-def avalanche_preprocessor(data, fs, k=3.0, thresholding='std'):
+EPSILON = 1e-10
+
+def avalanche_preprocessor(data: np.ndarray, 
+                           fs: float, 
+                           k: float=3.0, 
+                           thresholding: str='std') -> tuple[np.ndarray, float]:
     r"""
     Detect avalanche events in the data.
 
@@ -29,9 +32,9 @@ def avalanche_preprocessor(data, fs, k=3.0, thresholding='std'):
     
     Returns
     -------
-    res : np.ndarray
-        Binary array (uint8) of the same shape as data, 
-        with 1s at the absolute peak of each detected event.
+    binary_data : np.ndarray (uint8)
+        Binary array of the same shape as data, with 1s at 
+        the absolute peak of each detected event.
     fs : float
         Sampling frequency (passed through).
     """
@@ -39,7 +42,7 @@ def avalanche_preprocessor(data, fs, k=3.0, thresholding='std'):
     if thresholding == 'std':
         row_means = data.mean(axis=1, keepdims=True)
         row_stds = data.std(axis=1, keepdims=True)
-        row_stds[row_stds == 0] = 1e-10
+        row_stds[row_stds == 0] = EPSILON
         abs_data = data - row_means 
         abs_data /= row_stds         
         np.abs(abs_data, out=abs_data)
@@ -47,11 +50,11 @@ def avalanche_preprocessor(data, fs, k=3.0, thresholding='std'):
     elif thresholding == 'mad':
         row_medians = np.median(data, axis=1, keepdims=True)
         robust_sd = median_abs_deviation(data, axis=1, scale='normal', keepdims=True)
-        robust_sd[robust_sd == 0] = 1e-10
+        robust_sd[robust_sd == 0] = EPSILON
         abs_data = data - row_medians 
         abs_data /= robust_sd         
         np.abs(abs_data, out=abs_data)
-    
+
     else:
         raise ValueError(f"Unsupported thresholding method: {thresholding}")
     
@@ -73,33 +76,11 @@ def avalanche_preprocessor(data, fs, k=3.0, thresholding='std'):
 
     return binary_data, fs
 
-def _optimal_bin_size(binary_data):
-    r"""
-    Determine the optimal bin size for avalanche detection.
-
-    Params
-    ------
-    binary_data : np.ndarray
-        Binary array of size (n_channels, n_samples) indicating avalanche events.
-
-    Returns
-    -------
-    int
-        Optimal bin size (in samples) for binning avalanches.
-
-    Notes
-    -----
-    The optimal bin size is calculated as the average inter-event interval (IEI),
-    based on Beggs, John M., and Dietmar Plenz. "Neuronal avalanches in neocortical circuits" (2003).
-    """
-    network_activity = np.sum(binary_data, axis=0)
-    active_indices = np.where(network_activity > 0)[0]
-    if len(active_indices) < 2:
-        return 1
-    ieis = np.diff(active_indices)
-    return int(np.round(np.mean(ieis)))
-
-def bin_avalanches(binary_data, fs, bin_size_sec=None):
+def bin_avalanches(binary_data: np.ndarray, 
+                   fs: float, 
+                   bin_size_sec: float = None,
+                   bin_size_samples: int = None,
+                   n_bins: int = None) -> tuple[np.ndarray, float, float]:
     r"""
     Bin avalanche events into contiguous time bins.
 
@@ -110,34 +91,55 @@ def bin_avalanches(binary_data, fs, bin_size_sec=None):
     fs : float
         Sampling frequency of the data in Hz.
     bin_size_sec : float, optional
-        Size of each bin in seconds. If None, the optimal bin size is computed.
+        Desired bin size in seconds. If specified, overrides other binning parameters.
+    bin_size_samples : int, optional
+        Desired bin size in samples. If specified, overrides n_bins.
+    n_bins : int, optional
+        Desired number of bins to divide the data into. If specified, overrides bin_size_sec.
 
     Returns
     -------
     binned_array : np.ndarray
         1-D ndarray of binned avalanche events.
+    fs : float
+        Sampling frequency (passed through).
     bin_size_sec : float
         The bin size used in seconds.
+
+    Notes
+    -----
+    - Exactly one of bin_size_sec, bin_size_samples, or n_bins can be specified. 
+    - The function will trim the data to fit an integer number of bins if necessary.
     """
-    if bin_size_sec is None:
-        bin_size_samples = _optimal_bin_size(binary_data) # >=1
-        bin_size_sec = bin_size_samples / fs
-    else:
-        bin_size_samples = int(np.round(bin_size_sec * fs))
-        if bin_size_samples < 1:
-            bin_size_samples = 1
-            bin_size_sec = 1.0 / fs
+    # verify that only one of the binning parameters is specified
+    preds = [bin_size_sec != None, bin_size_samples != None, n_bins != None]
+    if sum(preds) > 1:
+        raise ValueError("Only one of bin_size_sec, bin_size_samples, or n_bins can be specified.")
+    elif sum(preds) == 0:
+        raise ValueError("One of bin_size_sec, bin_size_samples, or n_bins must be specified.") 
+    
+    if bin_size_sec:
+        bin_size_samples = int(np.floor(bin_size_sec * fs))
+    elif n_bins:
+        bin_size_samples = binary_data.shape[1] // n_bins
+
+    if bin_size_samples <= 1:
+        raise ValueError("Resulting bin size is too small")
+    
+    bin_size_sec = bin_size_samples / fs # recalculate
 
     network_activity = np.sum(binary_data, axis=0)
     n_samples = network_activity.shape[0]
-    n_bins = n_samples // bin_size_samples
-    trimmed_activity = network_activity[:n_bins * bin_size_samples] # trim to fit bins
+    actual_n_bins = n_samples // bin_size_samples
+    trimmed_activity = network_activity[:actual_n_bins * bin_size_samples] # trim to fit bins
 
-    binned_array = trimmed_activity.reshape(n_bins, bin_size_samples).sum(axis=1)
+    binned_array = trimmed_activity.reshape(actual_n_bins, bin_size_samples).sum(axis=1)
 
-    return binned_array, bin_size_sec
+    return binned_array, fs, bin_size_sec
 
-def detect_avalanches(binned_array, bin_size_sec):
+def detect_avalanches(binned_array: np.ndarray, 
+                      fs: float, 
+                      bin_size_sec: float) -> dict:
     r"""
     Detect avalanche start and end indices in the binned array.
 
@@ -164,6 +166,7 @@ def detect_avalanches(binned_array, bin_size_sec):
     if n == 0 or not np.any(is_active):
         return {
             'data': binned_array,
+            'fs': fs,
             'indices': np.empty((0, 2), dtype=int),
             'bin_size_sec': bin_size_sec
         }   
@@ -186,6 +189,37 @@ def detect_avalanches(binned_array, bin_size_sec):
 
     return {
         'data': binned_array,
+        'fs': fs,
         'indices': np.column_stack((start_indices, end_indices)),
         'bin_size_sec': bin_size_sec
     }
+
+# Example usage
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+
+    # generate synthetic data
+    np.random.seed(0)
+    n_channels = 5
+    n_samples = 10000
+    fs = 100.0
+    data = np.random.randn(n_channels, n_samples)
+
+    # preprocess and bin avalanches
+    binary_data, fs = avalanche_preprocessor(data, fs, k=2.0, thresholding='std')
+    binned_array, fs, bin_size_sec = bin_avalanches(binary_data, fs, bin_size_sec=0.1)
+    avalanche_dict = detect_avalanches(binned_array, fs, bin_size_sec)
+
+    print("Avalanche indices (start_bin, end_bin):")
+    print(avalanche_dict['indices'])
+
+    # plot binned activity and detected avalanches
+    plt.figure(figsize=(12, 4))
+    plt.plot(avalanche_dict['data'], label='Binned Activity')
+    for start_bin, end_bin in avalanche_dict['indices']:
+        plt.axvspan(start_bin, end_bin + 1, color='red', alpha=0.3)
+    plt.xlabel('Bin Index')
+    plt.ylabel('Activity Count')
+    plt.title('Binned Avalanche Activity with Detected Avalanches')
+    plt.legend()
+    plt.show()
